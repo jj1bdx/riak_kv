@@ -44,10 +44,14 @@
 
 -export([data_size/1]).
 
-%% Needed for riak_kv_group_keys
+%% Needed for riak_kv_group_list
 -export([to_first_key/1,
          from_object_key/1,
-         to_object_key/2]).
+         to_object_key/2,
+         grouped_fold/4,
+         iterator_open/2,
+         iterator_close/1,
+         iterator_move/2]).
 
 -compile({inline, [
                    to_object_key/2, from_object_key/1,
@@ -207,6 +211,15 @@ put(Bucket, PrimaryKey, IndexSpecs, Val, #state{ref=Ref, write_opts=WriteOpts}=S
             {error, Reason, State}
     end.
 
+iterator_open(DbRef, Options) ->
+    eleveldb:iterator(DbRef, Options).
+
+iterator_close(Itr) ->
+    eleveldb:iterator_close(Itr).
+
+iterator_move(Itr, Pos) ->
+    eleveldb:iterator_move(Itr, Pos).
+
 async_put(Context, Bucket, PrimaryKey, Val, #state{ref=Ref, write_opts=WriteOpts}=State) ->
     StorageKey = to_object_key(Bucket, PrimaryKey),
     eleveldb:async_put(Ref, Context, StorageKey, Val, WriteOpts),
@@ -359,12 +372,8 @@ determine_next_bucket_seek(PrevBucket) ->
                 any(),
                 [{atom(), term()}],
                 state()) -> {ok, term()} | {async, fun()}.
-fold_keys(FoldKeysFun, Acc, Opts, State) ->
-  FoldKeysType = proplists:get_value(fold_keys_type, Opts, fold_keys),
-  fold_keys(FoldKeysType, FoldKeysFun, Acc, Opts, State).
-
 %% @doc Fold over all the keys for one or all buckets.
-fold_keys(fold_keys, FoldKeysFun, Acc, Opts, #state{fold_opts=FoldOpts, ref=Ref}) ->
+fold_keys(FoldKeysFun, Acc, Opts, #state{fold_opts=FoldOpts, ref=Ref}) ->
     %% Figure out how we should limit the fold: by bucket, by
     %% secondary index, or neither (fold across everything.)
     Bucket = lists:keyfind(bucket, 1, Opts),
@@ -396,11 +405,7 @@ fold_keys(fold_keys, FoldKeysFun, Acc, Opts, #state{fold_opts=FoldOpts, ref=Ref}
             {async, KeyFolder};
         false ->
             {ok, KeyFolder()}
-    end;
-fold_keys(fold_group_keys,
-    FoldFun, Acc, Opts,
-    #state{fold_opts=FoldOpts, ref=DbRef}) ->
-    riak_kv_group_keys:fold_keys(?MODULE, FoldFun, Acc, Opts, FoldOpts, DbRef).
+    end.
 
 fold_indexes(FoldIndexFun, Acc, _Opts, #state{fold_opts=FoldOpts,
                                               ref=Ref}) ->
@@ -474,6 +479,16 @@ fold_objects(FoldObjectsFun, Acc, Opts, #state{fold_opts=FoldOpts,
         false ->
             {ok, ObjectFolder()}
     end.
+
+-spec grouped_fold(FoldFun::riak_kv_backend:fold_objects_fun(),
+                   Acc::riak_kv_fold_buffer:buffer(),
+                   Opts::proplists:proplist(),
+                   State::#state{}) ->
+    {ok, any()} | {async, fun()}.
+grouped_fold(
+          FoldFun, Acc, Opts,
+          #state{fold_opts=FoldOpts, ref=DbRef}) ->
+    riak_kv_group_list:fold_objects(?MODULE, FoldFun, Acc, Opts, FoldOpts, DbRef).
 
 %% @doc Delete all objects from this eleveldb backend
 %% and return a fresh reference.
